@@ -25,9 +25,13 @@ describe('ReactFiberRefs', () => {
     assertLog = require('internal-test-utils').assertLog;
   });
 
-  test('ref is attached even if there are no other updates (class)', async () => {
+  it('ref is attached even if there are no other updates (class)', async () => {
     let component;
-    class Component extends React.PureComponent {
+    class Component extends React.Component {
+      shouldComponentUpdate() {
+        // This component's output doesn't depend on any props or state
+        return false;
+      }
       render() {
         Scheduler.log('Render');
         component = this;
@@ -57,7 +61,7 @@ describe('ReactFiberRefs', () => {
     expect(ref2.current).toBe(component);
   });
 
-  test('ref is attached even if there are no other updates (host component)', async () => {
+  it('ref is attached even if there are no other updates (host component)', async () => {
     // This is kind of ailly test because host components never bail out if they
     // receive a new element, and there's no way to update a ref without also
     // updating the props, but adding it here anyway for symmetry with the
@@ -79,5 +83,80 @@ describe('ReactFiberRefs', () => {
     // But the refs still should have been swapped.
     expect(ref1.current).toBe(null);
     expect(ref2.current).not.toBe(null);
+  });
+
+  it('throw if a string ref is passed to a ref-receiving component', async () => {
+    let refProp;
+    function Child({ref}) {
+      // This component renders successfully because the ref type check does not
+      // occur until you pass it to a component that accepts refs.
+      //
+      // So the div will throw, but not Child.
+      refProp = ref;
+      return <div ref={ref} />;
+    }
+
+    class Owner extends React.Component {
+      render() {
+        return <Child ref="child" />;
+      }
+    }
+
+    const root = ReactNoop.createRoot();
+    await expect(act(() => root.render(<Owner />))).rejects.toThrow(
+      'Expected ref to be a function',
+    );
+    expect(refProp).toBe('child');
+  });
+
+  it('strings refs can be codemodded to callback refs', async () => {
+    let app;
+    class App extends React.Component {
+      render() {
+        app = this;
+        return (
+          <div
+            prop="Hello!"
+            ref={el => {
+              // `refs` used to be a shared frozen object unless/until a string
+              // ref attached by the reconciler, but it's not anymore so that we
+              // can codemod string refs to userspace callback refs.
+              this.refs.div = el;
+            }}
+          />
+        );
+      }
+    }
+
+    const root = ReactNoop.createRoot();
+    await act(() => root.render(<App />));
+    expect(app.refs.div.prop).toBe('Hello!');
+  });
+
+  it('class refs are initialized to a frozen shared object', async () => {
+    const refsCollection = new Set();
+    class Component extends React.Component {
+      constructor(props) {
+        super(props);
+        refsCollection.add(this.refs);
+      }
+      render() {
+        return <div />;
+      }
+    }
+
+    const root = ReactNoop.createRoot();
+    await act(() =>
+      root.render(
+        <>
+          <Component />
+          <Component />
+        </>,
+      ),
+    );
+
+    expect(refsCollection.size).toBe(1);
+    const refsInstance = Array.from(refsCollection)[0];
+    expect(Object.isFrozen(refsInstance)).toBe(__DEV__);
   });
 });
